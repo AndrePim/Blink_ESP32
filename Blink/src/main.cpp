@@ -28,11 +28,6 @@ const bool BTN_LEVEL = LOW;  // Высокий уровень сигнала
 
 TaskHandle_t blink;
 QueueHandle_t queue;
-SemaphoreHandle_t semaphore;
-portMUX_TYPE mutex = portMUX_INITIALIZER_UNLOCKED;
-
-uint8_t lastPressed = 0;
-bool lastBtn;
 
 // Задача FreeRTOS для мигания светодиода
 void blinkTask(void *pvParam)
@@ -69,48 +64,33 @@ void blinkTask(void *pvParam)
 
 void IRAM_ATTR btnISR()
 {
-  portENTER_CRITICAL_ISR(&mutex);
-  lastBtn = digitalRead(BTN_PIN) == BTN_LEVEL;
-  if (lastBtn)
-    lastPressed = millis();
-  portEXIT_CRITICAL_ISR(&mutex);
-  xSemaphoreGiveFromISR(semaphore, NULL);
-}
-
-void btnTask(void *pvParam)
-{
   // Избежание дребезга контактов на кнопке
   const uint32_t CLICK_TIME = 20;      // 20 ms.
   const uint32_t LONGCLICK_TIME = 500; // 500 ms.
+  static uint8_t lastPressed = 0;
 
-  pinMode(BTN_PIN, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(BTN_PIN), btnISR, CHANGE);
+  uint32_t time = millis();
+  bool btn = digitalRead(BTN_PIN) == BTN_LEVEL;
 
-  while (true)
+  buttonstate_t state;
+  if (btn)
   {
-    if (xSemaphoreTake(semaphore, portMAX_DELAY) == pdTRUE)
-    {
-      uint32_t time = millis();
-      buttonstate_t state;
-      if (lastBtn)
-      {
-        state = BTN_PRESSED;
-        lastPressed = time;
-      }
-      else
-      {
-        if (time - lastPressed >= LONGCLICK_TIME)
-          state = BTN_LONGCLICK;
-        else if (time - lastPressed >= CLICK_TIME)
-          state = BTN_CLICK;
-        else
-          state = BTN_RELEASED;
-        lastPressed = 0;
-      }
-      xQueueSend((QueueHandle_t)pvParam, &state, portMAX_DELAY);
-    }
+    state = BTN_PRESSED;
+    lastPressed = time;
   }
+  else
+  {
+    if (time - lastPressed >= LONGCLICK_TIME)
+      state = BTN_LONGCLICK;
+    else if (time - lastPressed >= CLICK_TIME)
+      state = BTN_CLICK;
+    else
+      state = BTN_RELEASED;
+    lastPressed = 0;
+  }
+  xQueueSendFromISR(queue, &state, NULL);
 }
+
 // Функция для очистки буфера и отправки esp в глубокий сон
 static void halt(const char *msg)
 {
@@ -123,20 +103,14 @@ void setup()
 {
   Serial.begin(115200);
   Serial.println();
-
+  pinMode(BTN_PIN, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(BTN_PIN), btnISR, CHANGE);
   if (xTaskCreate(blinkTask, "blink", 1024, NULL, 1, &blink) != pdPASS)
     halt("Error creating blink task!");
 
   queue = xQueueCreate(32, sizeof(buttonstate_t)); // Очередь
   if (!queue)
     halt("Error creating queue!");
-
-  semaphore = xSemaphoreCreateBinary();
-  if (!semaphore)
-    halt("Error creating semaphore!");
-
-  if (xTaskCreate(btnTask, "btn", 1024, (void *)queue, 1, NULL) != pdPASS)
-    halt("Error creating button task!");
 
   if (xTaskNotify(blink, LED_1HZ, eSetValueWithOverwrite) != pdPASS)
     Serial.println("Error setting LED mode!");
