@@ -29,6 +29,10 @@ const bool BTN_LEVEL = LOW;  // Высокий уровень сигнала
 TaskHandle_t blink;
 QueueHandle_t queue;
 SemaphoreHandle_t semaphore;
+portMUX_TYPE mutex = portMUX_INITIALIZER_UNLOCKED;
+
+uint8_t lastPressed = 0;
+bool lastBtn;
 
 // Задача FreeRTOS для мигания светодиода
 void blinkTask(void *pvParam)
@@ -65,6 +69,11 @@ void blinkTask(void *pvParam)
 
 void IRAM_ATTR btnISR()
 {
+  portENTER_CRITICAL_ISR(&mutex);
+  lastBtn = digitalRead(BTN_PIN) == BTN_LEVEL;
+  if (lastBtn)
+    lastPressed = millis();
+  portEXIT_CRITICAL_ISR(&mutex);
   xSemaphoreGiveFromISR(semaphore, NULL);
 }
 
@@ -74,12 +83,8 @@ void btnTask(void *pvParam)
   const uint32_t CLICK_TIME = 20;      // 20 ms.
   const uint32_t LONGCLICK_TIME = 500; // 500 ms.
 
-  uint8_t lastPressed = 0;
-  bool lastBtn;
-
   pinMode(BTN_PIN, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(BTN_PIN), btnISR, CHANGE);
-  //lastBtn = digitalRead(BTN_PIN) == BTN_LEVEL;
 
   while (true)
   {
@@ -87,7 +92,6 @@ void btnTask(void *pvParam)
     {
       uint32_t time = millis();
       buttonstate_t state;
-      lastBtn = digitalRead(BTN_PIN) == BTN_LEVEL;
       if (lastBtn)
       {
         state = BTN_PRESSED;
