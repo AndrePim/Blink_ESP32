@@ -1,7 +1,7 @@
 // Урок:
 // https://www.youtube.com/watch?v=KosUkJmHWxI
 #include <Arduino.h>
-
+#include <WiFi.h>
 // Состояния для светодиода
 enum ledmode_t : uint8_t
 {
@@ -28,6 +28,12 @@ const bool BTN_LEVEL = LOW;  // Высокий уровень сигнала
 
 TaskHandle_t blink;
 QueueHandle_t queue;
+
+static void setBlink(ledmode_t mode)
+{
+  if (xTaskNotify(blink, mode, eSetValueWithOverwrite) != pdPASS)
+    Serial.println("Error setting LED mode!");
+}
 
 // Задача FreeRTOS для мигания светодиода
 void blinkTask(void *pvParam)
@@ -91,6 +97,50 @@ void IRAM_ATTR btnISR()
   xQueueSendFromISR(queue, &state, NULL);
 }
 
+void wifiTask(void *pvParam)
+{
+  const uint32_t WIFI_TIMEOUT = 30000; // 30 ms
+
+  WiFi.persistent(false);
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+  while (true)
+  {
+    if (!WiFi.isConnected())
+    {
+      uint32_t start = millis();
+
+      WiFi.begin("SmartTech", "78937451");
+      Serial.print("Connecting to WiFi");
+      setBlink(LED_4HZ);
+
+      while ((!WiFi.isConnected()) && (millis() - start < WIFI_TIMEOUT))
+      {
+        Serial.print('.');
+        vTaskDelay(pdMS_TO_TICKS(500));
+      }
+      if (WiFi.isConnected())
+      {
+        Serial.print("OP (IP");
+        Serial.print(WiFi.localIP());
+        Serial.print(')');
+        setBlink(LED_1HZ);
+      }
+      else
+      {
+        WiFi.disconnect();
+        Serial.println(" FAIL!");
+        setBlink(LED_OFF);
+        vTaskDelay(pdMS_TO_TICKS(WIFI_TIMEOUT));
+      }
+    }
+    else
+    {
+      vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+  }
+}
+
 // Функция для очистки буфера и отправки esp в глубокий сон
 static void halt(const char *msg)
 {
@@ -107,13 +157,11 @@ void setup()
   attachInterrupt(digitalPinToInterrupt(BTN_PIN), btnISR, CHANGE);
   if (xTaskCreate(blinkTask, "blink", 1024, NULL, 1, &blink) != pdPASS)
     halt("Error creating blink task!");
-
+ if (xTaskCreatePinnedToCore(wifiTask, "WiFi", 4096, NULL, 1, NULL, 1) != pdPASS)
+    halt("Error creating WiFi task!");
   queue = xQueueCreate(32, sizeof(buttonstate_t)); // Очередь
   if (!queue)
     halt("Error creating queue!");
-
-  if (xTaskNotify(blink, LED_1HZ, eSetValueWithOverwrite) != pdPASS)
-    Serial.println("Error setting LED mode!");
 }
 
 void loop()
